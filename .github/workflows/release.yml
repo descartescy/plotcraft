@@ -1,4 +1,4 @@
-name: Publish vizforge to PyPI
+name: Publish plotcraft to PyPI
 
 # 触发条件：当你推送一个形如 "v1.0.0" 的 tag 时触发
 on:
