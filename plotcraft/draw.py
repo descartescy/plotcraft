@@ -3,24 +3,27 @@ import matplotlib.transforms as transforms
 from typing import Union, List, Optional
 import numpy as np
 from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
-from .utils import floor_significant_digits
+from .utils import floor_significant_digits, calculate_nb, _threshold_to_cost_benefit
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 import matplotlib.patches as patches
 import pandas as pd
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
+from scipy import stats
+import warnings
+import matplotlib.ticker as ticker
 
 
 def train_test_lift(
-    train:Union[List[List], np.ndarray],
-    test:Union[List[List], np.ndarray],
-    paired:bool=True,
-    colors:Optional[List[str]]=None,
-    labels:Optional[List[str]]=None,
-    yticks_interval:Optional[int|float]=None,
-    axis_range:Optional[List[Optional[int|float]]]=None,
-    offset:Optional[int|float]=None
+        train:Union[List[List], np.ndarray],
+        test:Union[List[List], np.ndarray],
+        paired:bool=True,
+        colors:Optional[List[str]]=None,
+        labels:Optional[List[str]]=None,
+        yticks_interval:Optional[int|float]=None,
+        axis_range:Optional[List[Optional[int|float]]]=None,
+        offset:Optional[int|float]=None
 ) -> tuple[Figure,Axes]:
     """
     Plot lifted histogram comparison between training and test distributions.
@@ -154,16 +157,16 @@ def train_test_lift(
 
 
 def triangular_heatmap(
-    data: pd.DataFrame | np.ndarray,
-    annot: bool = True,
-    annot_kws: Optional[dict] = None,
-    linewidths: float | int = 1.5,
-    linecolor: str = 'white',
-    ticks_size: int | float = 9,
-    vmin: float | int = -1,
-    vmax: float | int = 1,
-    cmap: str | plt.Colormap = None,
-    norm: Normalize = None
+        data: pd.DataFrame | np.ndarray,
+        annot: bool = True,
+        annot_kws: Optional[dict] = None,
+        linewidths: float | int = 1.5,
+        linecolor: str = 'white',
+        ticks_size: int | float = 9,
+        vmin: float | int = -1,
+        vmax: float | int = 1,
+        cmap: str | plt.Colormap = None,
+        norm: Normalize = None
 ) -> tuple[Figure,Axes]:
     """
     Draw a heatmap of a triangle.
@@ -359,19 +362,20 @@ def triangular_heatmap(
     return fig, ax
 
 def enlarged_roc_curve(
-    *true_score_pairs,
-    colors:Optional[List[str]]=None,
-    labels:Optional[List[str]]=None,
-    paired:bool=False,
-    calculate:bool=True,
-    plot_kwargs:dict=None,
-    enlarged:bool=False,
-    to_enlarge_frame_location:List[int|float]=None,
-    enlarged_frame_location:List[int|float]=None,
-    enlarged_frame_xticks:List[int|float]=None,
-    enlarged_frame_yticks:List[int|float]=None,
-    enlarged_frame_transparent:bool=True,
-    legend_kwargs:dict=None
+        *true_score_pairs: List[List] | np.ndarray | pd.DataFrame,
+        dataframe_cols: List[str] = None,
+        colors:Optional[List[str]]=None,
+        labels:Optional[List[str]]=None,
+        paired:bool=False,
+        calculate:bool=True,
+        plot_kwargs:dict=None,
+        enlarged:bool=False,
+        to_enlarge_frame_location:List[int|float]=None,
+        enlarged_frame_location:List[int|float]=None,
+        enlarged_frame_xticks:List[int|float]=None,
+        enlarged_frame_yticks:List[int|float]=None,
+        enlarged_frame_transparent:bool=True,
+        legend_kwargs:dict=None
 ) -> tuple[Figure,Axes]:
     """
     Plot ROC curves with optional local zoom-in functionality.
@@ -382,9 +386,13 @@ def enlarged_roc_curve(
 
     Parameters
     ----------
-    *true_score_pairs : sequence of array-like
+    *true_score_pairs : sequence of array-like | dataframe
         Each argument is a pair (y_true, y_score). Multiple pairs can be
-        passed to compare ROC curves across models.
+        passed to compare PR curves across models.
+
+    dataframe_cols : list of str, default=None
+        If you input "dataframe", please enter a one-dimensional list of length 2, like[true_column_name, score_column_name].
+        If it is None, then the default list will be ["true", "score"].
 
     colors : list of str, default=None
         List of colors for each ROC curve. Length must match the number
@@ -461,11 +469,16 @@ def enlarged_roc_curve(
 
     fpr_list, tpr_list = [], []
     for i, true_score_pair in enumerate(true_score_pairs):
-        true_score_pair = np.array(true_score_pair)
-        if paired:
-            y_true, score = true_score_pair[:, 0], true_score_pair[:, 1]
+        if isinstance(true_score_pair, pd.DataFrame):
+            if dataframe_cols is None:
+                dataframe_cols = ['true', 'score']
+            y_true, score = true_score_pair[dataframe_cols[0]].values, true_score_pair[dataframe_cols[1]].values
         else:
-            y_true, score = true_score_pair
+            true_score_pair = np.array(true_score_pair)
+            if paired:
+                y_true, score = true_score_pair[:, 0], true_score_pair[:, 1]
+            else:
+                y_true, score = true_score_pair
         fpr, tpr, _ = roc_curve(y_true, score)
         if calculate:
             roc_auc = auc(fpr, tpr)
@@ -491,7 +504,6 @@ def enlarged_roc_curve(
     ax.yaxis.tick_right()
     ax.yaxis.set_label_position("right")
 
-    # 主图标签与标题
     ax.set_xlabel("False positive rate", fontsize=22, labelpad=10)
     ax.set_ylabel("True positive rate", fontsize=22, labelpad=20)
     ax.set_title("ROC curve", fontsize=22, pad=20)
@@ -537,19 +549,22 @@ def enlarged_roc_curve(
     plt.tight_layout()
     return fig, ax
 
-def enlarged_pr_curve(*true_score_pairs: List[List] | np.ndarray,
-                       colors:Optional[List[str]]=None,
-                       labels:Optional[List[str]]=None,
-                       paired:bool=False,
-                       calculate:bool=True,
-                       plot_kwargs:dict=None,
-                       enlarged:bool=False,
-                       to_enlarge_frame_location:List[int|float]=None,
-                       enlarged_frame_location:List[int|float]=None,
-                       enlarged_frame_xticks:List[int|float]=None,
-                       enlarged_frame_yticks:List[int|float]=None,
-                       enlarged_frame_transparent:bool=True,
-                       legend_kwargs:dict=None) -> tuple[Axes, Figure]:
+def enlarged_pr_curve(
+        *true_score_pairs: List[List] | np.ndarray | pd.DataFrame,
+        dataframe_cols:List[str]=None,
+        colors:Optional[List[str]]=None,
+        labels:Optional[List[str]]=None,
+        paired:bool=False,
+        calculate:bool=True,
+        plot_kwargs:dict=None,
+        enlarged:bool=False,
+        to_enlarge_frame_location:List[int|float]=None,
+        enlarged_frame_location:List[int|float]=None,
+        enlarged_frame_xticks:List[int|float]=None,
+        enlarged_frame_yticks:List[int|float]=None,
+        enlarged_frame_transparent:bool=True,
+        legend_kwargs:dict=None
+) -> tuple[Figure, Axes]:
     """
     Plot PR curves with optional local zoom-in functionality.
 
@@ -559,9 +574,13 @@ def enlarged_pr_curve(*true_score_pairs: List[List] | np.ndarray,
 
     Parameters
     ----------
-    *true_score_pairs : sequence of array-like
+    *true_score_pairs : sequence of array-like | dataframe
         Each argument is a pair (y_true, y_score). Multiple pairs can be
         passed to compare PR curves across models.
+
+    dataframe_cols : list of str, default=None
+        If you input "dataframe", please enter a one-dimensional list of length 2, like[true_column_name, score_column_name].
+        If it is None, then the default list will be ["true", "score"].
 
     colors : list of str, default=None
         List of colors for each PR curve. Length must match the number
@@ -634,11 +653,16 @@ def enlarged_pr_curve(*true_score_pairs: List[List] | np.ndarray,
 
     precision_list, recall_list = [], []
     for i, true_score_pair in enumerate(true_score_pairs):
-        true_score_pair = np.array(true_score_pair)
-        if paired:
-            y_true, score = true_score_pair[:, 0], true_score_pair[:, 1]
+        if isinstance(true_score_pair, pd.DataFrame):
+            if dataframe_cols is None:
+                dataframe_cols = ['true', 'score']
+            y_true, score = true_score_pair[dataframe_cols[0]].values, true_score_pair[dataframe_cols[1]].values
         else:
-            y_true, score = true_score_pair
+            true_score_pair = np.array(true_score_pair)
+            if paired:
+                y_true, score = true_score_pair[:, 0], true_score_pair[:, 1]
+            else:
+                y_true, score = true_score_pair
         precision, recall, _ = precision_recall_curve(y_true, score)
         if calculate:
             AP = average_precision_score(y_true, score)
@@ -660,10 +684,7 @@ def enlarged_pr_curve(*true_score_pairs: List[List] | np.ndarray,
         ax.plot(recall, precision, **parameters)
 
     ax.spines[["top", "right"]].set_visible(False)
-    # ax.yaxis.tick_right()
-    # ax.yaxis.set_label_position("right")
 
-    # 主图标签与标题
     ax.set_xlabel("Recall", fontsize=22, labelpad=10)
     ax.set_ylabel("Precision", fontsize=22, labelpad=20)
     ax.set_title("PR curve", fontsize=22, pad=20)
@@ -696,7 +717,6 @@ def enlarged_pr_curve(*true_score_pairs: List[List] | np.ndarray,
                 parameters['linewidth'] = 2
             axins.plot(recall, precision, **parameters)
 
-        # axins.yaxis.tick_right()
         if enlarged_frame_xticks is not None:
             axins.set_xticks(enlarged_frame_xticks)
         if enlarged_frame_yticks is not None:
@@ -708,32 +728,494 @@ def enlarged_pr_curve(*true_score_pairs: List[List] | np.ndarray,
     plt.tight_layout()
     return fig, ax
 
+def correlation_graph_between_prediction_and_reality(
+        real:np.ndarray|List|pd.Series,
+        pred:np.ndarray|List|pd.Series,
+        correlation:Optional[callable]=None
+) -> tuple[Figure, Axes]:
+    """
+    Scatter plot of true vs. predicted values with correlation coefficient.
+
+    Generates a scatter plot to visualize the relationship between real (true) values and
+    predicted values, with a diagonal reference line (y=x) and the correlation coefficient
+    displayed in the top-left corner.
+
+    Parameters
+    ----------
+    real : np.ndarray or List or pd.Series
+        Ground truth (real) values. Will be flattened to 1D if input is multi-dimensional.
+    pred : np.ndarray or List or pd.Series
+        Predicted values. Must have the same length as `real`. Will be flattened to 1D if
+        input is multi-dimensional.
+    correlation : callable, default=None
+        Function to compute the correlation coefficient. If None, uses `scipy.stats.pearsonr`.
+        If a callable is provided, it must take two arrays (real, pred) as input and return a
+        tuple (value, ...), where the first element is the correlation coefficient to display.
+        The signature should match `scipy.stats.pearsonr`.
+
+    Returns
+    -------
+    fig : Figure
+        Matplotlib Figure object containing the plot.
+    ax : Axes
+        Matplotlib Axes object containing the plot.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import matplotlib.pyplot as plt
+    >>> from plotcraft.draw import correlation_graph_between_prediction_and_reality
+    >>> real = np.random.randn(1000)
+    >>> pred = real + np.random.randn(1000) * 0.5
+    >>> fig, ax = correlation_graph_between_prediction_and_reality(real, pred)
+    >>> plt.show()
+
+    >>> real = np.random.randn(1000)
+    >>> pred = real.copy()
+    >>> fig, ax = correlation_graph_between_prediction_and_reality(real, pred)
+    >>> plt.show()
+    """
+    fig = plt.figure(figsize=(8, 8))
+    real = np.array(real).ravel()
+    pred = np.array(pred).ravel()
+    plt.scatter(real, pred, color='#3388dd', alpha=0.6, s=40, edgecolors='none')
+    range_min = min(min(real), min(pred))
+    range_max = max(max(real), max(pred))
+    dis = range_max - range_min
+    range_min -= dis * 0.05
+    range_max += dis * 0.05
+    plt.xlim(range_min, range_max)
+    plt.ylim(range_min, range_max)
+    plt.plot([range_min, range_max], [range_min, range_max], '--', color='grey')
+    if correlation is None:
+        correlation = stats.pearsonr
+    r_value, _ = correlation(real, pred)
+    r_text = f"R = {r_value:.2f}"
+    ax = plt.gca()
+    ax.text(0.02, 0.98, r_text,
+            transform=ax.transAxes,
+            fontsize=32, fontweight='bold', color='#bb2222',
+            va='top', ha='left')
+    plt.tight_layout()
+    return fig,ax
+
+
+def dca_curve(
+        *dataframes: pd.DataFrame,
+        dataframe_cols: List[str],
+        thresholds: Optional[np.ndarray | List[str]] = None,
+        confidence_intervals: Optional[float] = None,
+        bootstraps: int = 500,
+        policy: str = "opt-in",
+        study_design: str = "cohort",
+        population_prevalence: float | None = None,
+        random_state: int = 42,
+        model_names: List[str] = None,
+        cost_benefit_axis: bool = True,
+        colors: Optional[List[str]] = None,
+):
+    """
+    Plot Decision Curve Analysis (DCA) for one or more prediction models.
+
+    Compute and visualize the standardized net benefit (sNB) across a range
+    of risk thresholds, along with the "Treat All" and "Treat None"
+    reference strategies.  Optionally adds bootstrap confidence intervals
+    and a secondary cost:benefit ratio axis.
+
+    This implementation mirrors the methodology of the R ``dcurves``
+    package (``decision_curve``).
+
+    Parameters
+    ----------
+    *dataframes : sequence of pandas.DataFrame
+        One or more DataFrames, each containing at least the outcome column
+        and the predicted probability column specified in `dataframe_cols`.
+        All DataFrames must share the same column names given by
+        `dataframe_cols`.  When multiple DataFrames are supplied, each is
+        treated as a separate model; the "Treat All" / "Treat None"
+        reference curves are drawn only from the first DataFrame.
+
+    dataframe_cols : list of str, length = 2
+        Column names to use.  ``dataframe_cols[0]`` is the binary outcome
+        variable (coded 0/1) and ``dataframe_cols[1]`` is the predicted
+        probability of the outcome (values in [0, 1]).
+
+    thresholds : array-like of float, default=None
+        Risk-threshold grid on which net benefit is evaluated.
+        Each element must lie in [0, 1].  If None, defaults to
+        ``np.arange(0.01, 1.01, 0.01)``.
+
+    confidence_intervals : float, default=None
+        If not None, a value in (0, 1) giving the confidence level for
+        bootstrap confidence intervals (e.g. 0.95 for 95 % CIs).
+        When None, no confidence intervals are computed.
+
+    bootstraps : int, default=500
+        Number of bootstrap resamples used to estimate confidence intervals.
+        Ignored when ``confidence_intervals`` is None.
+
+    policy : {'opt-in', 'opt-out'}, default='opt-in'
+        Clinical policy direction.
+
+        - ``'opt-in'``:  patients are treated only if their predicted risk
+          exceeds the threshold (the standard DCA scenario).
+        - ``'opt-out'``: patients are treated by default and only opt out
+          of treatment when their predicted risk falls below the threshold.
+
+    study_design : {'cohort', 'case-control'}, default='cohort'
+        Study design from which the data originate.  When
+        ``'case-control'``, the ``population_prevalence`` parameter is
+        required to re-calibrate net-benefit calculations.
+
+    population_prevalence : float or None, default=None
+        Known disease prevalence in the target population.
+        Required when ``study_design='case-control'``; ignored (with a
+        warning) when ``study_design='cohort'``.
+
+    random_state : int, default=42
+        Seed for the random number generator used in bootstrap resampling.
+        Pass an int for reproducible confidence intervals across multiple
+        function calls.
+
+    model_names : list of str or None, default=None
+        Display names for each model in the legend.  Must have the same
+        length as the number of DataFrames.  If None, defaults to
+        ``['model 0', 'model 1', ...]``.
+
+    cost_benefit_axis : bool, default=True
+        If True, a secondary x-axis is drawn showing the cost:benefit
+        ratio that corresponds to each threshold value.
+
+    colors : list of str or None, default=None
+        Matplotlib-compatible color specifications for the model curves.
+        If None, the current ``axes.prop_cycle`` colors are used.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The Figure object containing the DCA plot.
+
+    ax : matplotlib.axes.Axes
+        The primary Axes object of the plot, which can be used for further
+        customisation.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import matplotlib.pyplot as plt
+    >>> from plotcraft.draw import dca_curve
+
+    >>> array = np.load('./data/true_score.npy')
+    >>> datas = [
+    ...     pd.DataFrame(
+    ...         np.array([array[i], array[i + 1]]).T,
+    ...         columns=['true', 'pred'],
+    ...     )
+    ...     for i in range(0, array.shape[0], 2)
+    ... ]
+
+    >>> fig, ax = dca_curve(
+    ...     *datas,
+    ...     dataframe_cols=['true', 'pred'],
+    ...     thresholds=np.arange(0.01, 0.11, 0.01),
+    ... )
+    >>> plt.show()
+
+    >>> fig, ax = dca_curve(
+    ...     *datas,
+    ...     dataframe_cols=['true', 'pred'],
+    ...     thresholds=np.arange(0.01, 1.01, 0.01),
+    ... )
+    >>> plt.show()
+
+    >>> fig, ax = dca_curve(
+    ...     datas[0],
+    ...     dataframe_cols=['true', 'pred'],
+    ...     thresholds=np.arange(0.01, 1.01, 0.01),
+    ...     confidence_intervals=0.95,
+    ... )
+    >>> plt.show()
+    """
+    assert len(dataframe_cols) == 2
+    real_col, score_col = dataframe_cols
+    if thresholds is None:
+        thresholds = np.arange(0.01, 1.01, 0.01)
+    else:
+        thresholds = np.array(thresholds)
+        assert (0 <= thresholds).all()
+        assert (thresholds <= 1).all()
+    if confidence_intervals is not None:
+        assert 0 < confidence_intervals < 1
+    assert isinstance(bootstraps, int)
+    assert policy in ("opt-in", "opt-out")
+    assert study_design in ("cohort", "case-control")
+    opt_in = policy == "opt-in"
+
+    if study_design == "case-control":
+        if population_prevalence is None:
+            raise ValueError("In a case-control study, population prevalence needs to be provided.")
+        casecontrol_rho = population_prevalence
+    else:
+        if population_prevalence is not None:
+            warnings.warn("When study_design is set to 'cohort', the population_prevalence will be ignored.")
+        casecontrol_rho = None
+
+    if model_names is None:
+        model_names = [f"model {i}" for i in range(len(dataframes))]
+
+    rng = np.random.default_rng(random_state)
+
+    def _calculate(real, score, thresholds, casecontrol_rho, opt_in, B_ind, confidence_intervals,
+                   calculate_all_none=False):
+        if not calculate_all_none:
+            nb_df = calculate_nb(
+                real, score, thresholds=thresholds,
+                casecontrol_rho=casecontrol_rho, opt_in=opt_in,
+            )
+            nb_df["model"] = "pred"
+            if B_ind is not None:
+                alpha = 1 - confidence_intervals
+                boot_snb = np.zeros((len(thresholds), bootstraps))
+                boot_nb = np.zeros((len(thresholds), bootstraps))
+
+                for b in range(bootstraps):
+                    idx = B_ind[:, b]
+                    real_b = real[idx]
+                    score_b = score[idx]
+                    try:
+                        tmp = calculate_nb(
+                            real_b, score_b, thresholds=thresholds,
+                            casecontrol_rho=casecontrol_rho, opt_in=opt_in,
+                        )
+                        boot_snb[:, b] = tmp["sNB"].values
+                        boot_nb[:, b] = tmp["NB"].values
+                    except Exception:
+                        boot_snb[:, b] = np.nan
+                        boot_nb[:, b] = np.nan
+
+                nb_df["sNB_lower"] = np.nanquantile(boot_snb, alpha / 2, axis=1)
+                nb_df["sNB_upper"] = np.nanquantile(boot_snb, 1 - alpha / 2, axis=1)
+                nb_df["NB_lower"] = np.nanquantile(boot_nb, alpha / 2, axis=1)
+                nb_df["NB_upper"] = np.nanquantile(boot_nb, 1 - alpha / 2, axis=1)
+
+            return nb_df
+        else:
+            nb_pred = _calculate(
+                real, score, thresholds=thresholds,
+                casecontrol_rho=casecontrol_rho, opt_in=opt_in, B_ind=B_ind, confidence_intervals=confidence_intervals
+            )
+            nb_pred["model"] = "pred"
+            nb_all = _calculate(
+                real, np.ones_like(real), thresholds=thresholds,
+                casecontrol_rho=casecontrol_rho, opt_in=opt_in, B_ind=B_ind, confidence_intervals=confidence_intervals
+            )
+            nb_all["model"] = "All"
+            nb_none = _calculate(
+                real, np.zeros_like(real), thresholds=thresholds,
+                casecontrol_rho=casecontrol_rho, opt_in=opt_in, B_ind=B_ind, confidence_intervals=confidence_intervals
+            )
+            nb_none["model"] = "None"
+            return pd.concat([nb_pred, nb_all, nb_none], ignore_index=True)
+
+    ans = []
+    for i, dataframe in enumerate(dataframes):
+        assert isinstance(dataframe, pd.DataFrame)
+        dataframe = dataframe[dataframe_cols].copy()
+        real = dataframe[real_col].values
+
+        B_ind = None
+        if confidence_intervals is not None:
+            n = len(dataframe)
+            B_ind = np.zeros((n, bootstraps), dtype=int)
+            if study_design == "cohort":
+                for b in range(bootstraps):
+                    B_ind[:, b] = rng.integers(0, n, size=n)
+            else:
+                idx_pos = np.where(real == 1)[0]
+                idx_neg = np.where(real == 0)[0]
+                for b in range(bootstraps):
+                    s_pos = rng.choice(idx_pos, size=len(idx_pos), replace=True)
+                    s_neg = rng.choice(idx_neg, size=len(idx_neg), replace=True)
+                    B_ind[:, b] = np.concatenate([s_pos, s_neg])
+
+        score = dataframe[score_col].values
+
+        if not i:
+            nb_df = _calculate(
+                real, score, thresholds=thresholds,
+                casecontrol_rho=casecontrol_rho, opt_in=opt_in, B_ind=B_ind, confidence_intervals=confidence_intervals,
+                calculate_all_none=True
+            )
+            nb_df["cost_benefit_ratio"] = np.tile(
+                _threshold_to_cost_benefit(thresholds, policy),
+                3,
+            )
+        else:
+            nb_df = _calculate(real, score, thresholds=thresholds,
+                               casecontrol_rho=casecontrol_rho, opt_in=opt_in, B_ind=B_ind,
+                               confidence_intervals=confidence_intervals)
+            nb_df["cost_benefit_ratio"] = np.tile(
+                _threshold_to_cost_benefit(thresholds, policy),
+                1,
+            )
+        ans.append(nb_df)
+
+    color_map = {"All": "grey", "None": "black"}
+    lw_map = {"All": 0.2, "None": 1.2}
+    if colors is None:
+        default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    else:
+        default_colors = colors
+    fig, ax = plt.subplots()
+
+    for i, df in enumerate(ans):
+        if not i:
+            labels = ['All', 'None', 'pred']
+            for label in labels:
+                sub = df[df["model"] == label].sort_values("threshold")
+                t = sub["threshold"].values
+                snb = sub["sNB"].values
+                color = color_map.get(label, default_colors[i])
+                lw = lw_map.get(label, 1.0)
+                ax.plot(t, snb, color=color, lw=lw, label=model_names[i] if label == 'pred' else label)
+                if confidence_intervals is not None and "sNB_lower" in sub.columns and label != "None":
+                    if label == "pred":
+                        ax.plot(t, sub["sNB_lower"].values, color=color, lw=0.5, linestyle="-")
+                        ax.plot(t, sub["sNB_upper"].values, color=color, lw=0.5, linestyle="-")
+                    else:
+                        ax.plot(t, sub["sNB_lower"].values, color=color, lw=0.2, linestyle="-")
+                        ax.plot(t, sub["sNB_upper"].values, color=color, lw=0.2, linestyle="-")
+        else:
+            labels = ['pred']
+            for label in labels:
+                sub = df[df["model"] == label].sort_values("threshold")
+                t = sub["threshold"].values
+                snb = sub["sNB"].values
+                color = color_map.get(label, default_colors[i])
+                lw = lw_map.get(label, 1.0)
+                ax.plot(t, snb, color=color, lw=lw, label=model_names[i] if label == 'pred' else label, zorder=3)
+                if confidence_intervals is not None and "sNB_lower" in sub.columns and label != "None":
+                    ax.plot(t, sub["sNB_lower"].values, color=color, lw=1, linestyle="-")
+                    ax.plot(t, sub["sNB_upper"].values, color=color, lw=1, linestyle="-")
+    ax.set_xlim(thresholds[0] - 0.005, thresholds[-1] + 0.005)
+    ax.set_ylim(-0.05, 1.0)
+
+    x_step = round((thresholds[-1] - thresholds[0]) / 4, 2)
+    x_ticks = np.arange(
+        round(x_step, 2),
+        thresholds[-1] + 1e-9,
+        x_step,
+    )
+    ax.set_xticks(x_ticks)
+    ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f"))
+    ax.set_yticks(np.arange(0, 1.01, 0.2))
+    ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.1f"))
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.spines["left"].set_bounds(0, 1.0)
+
+    ax.spines["bottom"].set_position(("outward", 10))
+    ax.spines["bottom"].set_bounds(x_ticks[0], x_ticks[-1])
+    ax.tick_params(axis="x", direction="out", length=5, pad=8,
+                   bottom=True, top=False)
+    ax.set_xlabel("High Risk Threshold", fontsize=11, labelpad=12)
+    ax.set_ylabel("Standardized Net Benefit", fontsize=11)
+    ax.legend(loc="upper right", frameon=True,
+              framealpha=0.9, edgecolor="black", fontsize=9)
+
+    if cost_benefit_axis:
+        ax2 = ax.twiny()
+        ax2.set_xlim(ax.get_xlim())
+
+        ax2.xaxis.set_ticks_position("bottom")
+        ax2.xaxis.set_label_position("bottom")
+        ax2.spines["bottom"].set_position(("outward", 70))
+        ax2.spines[["top", "right", "left"]].set_visible(False)
+        ax2.spines["bottom"].set_visible(True)
+        ax2.tick_params(axis="x", direction="out", length=5, pad=4,
+                        bottom=True, top=False)
+
+        t_lo, t_hi = thresholds[0], thresholds[-1]
+
+        candidate_pts = []
+        candidate_labels = []
+
+        if policy == "opt-in":
+            candidate_pts.append(1 / 2)
+            candidate_labels.append(f"1:1")
+            for K in range(5, 500, 5):
+                pt = 1.0 / (1.0 + K)
+                if t_lo <= pt <= t_hi:
+                    candidate_pts.append(pt)
+                    candidate_labels.append(f"1:{K}")
+            for K in range(5, 500, 5):
+                pt = K / (1.0 + K)
+                if t_lo <= pt <= t_hi:
+                    candidate_pts.append(pt)
+                    candidate_labels.append(f"{K}:1")
+        else:
+            candidate_pts.append(1 / 2)
+            candidate_labels.append(f"1:1")
+            for K in range(5, 500, 5):
+                pt = K / (1.0 + K)
+                if t_lo <= pt <= t_hi:
+                    candidate_pts.append(pt)
+                    candidate_labels.append(f"1:{K}")
+            for K in range(5, 500, 5):
+                pt = 1.0 / (1.0 + K)
+                if t_lo <= pt <= t_hi:
+                    candidate_pts.append(pt)
+                    candidate_labels.append(f"{K}:1")
+
+        if candidate_pts:
+            order = np.argsort(candidate_pts)
+            all_pts = np.array(candidate_pts)[order]
+            all_labels = [candidate_labels[i] for i in order]
+        else:
+            all_pts = np.array([])
+            all_labels = []
+
+        if len(all_pts) <= 5:
+            sel_pts = all_pts
+            sel_labels = all_labels
+        else:
+            left_t, right_t = all_pts[-1], all_pts[0]
+            ideal_mid = np.linspace(left_t, right_t, 5)[1:-1]
+            mid_pts = all_pts[1:-1]
+            mid_labels_pool = all_labels[1:-1]
+            chosen_idx = []
+            for target in ideal_mid:
+                dists = np.abs(mid_pts - target)
+                for ci in chosen_idx:
+                    dists[ci] = np.inf
+                chosen_idx.append(int(np.argmin(dists)))
+            chosen_idx.sort()
+            sel_pts = np.concatenate([
+                [all_pts[-1]],
+                mid_pts[chosen_idx],
+                [all_pts[0]],
+            ])
+            sel_labels = (
+                    [all_labels[-1]]
+                    + [mid_labels_pool[ci] for ci in chosen_idx]
+                    + [all_labels[0]]
+            )
+
+        ax2.set_xticks(sel_pts)
+        ax2.set_xticklabels(sel_labels, fontsize=9)
+        ax2.spines["bottom"].set_bounds(sel_pts.min(), sel_pts.max())
+        ax2.set_xlabel("Cost:Benefit Ratio", fontsize=11, labelpad=10)
+
+    plt.tight_layout()
+
+    return fig, ax
+
+
 
 if __name__ == '__main__':
     import numpy as np
-    import pandas as pd
-    from scipy import stats
-
-    n_samples, n_vars = 200, 20
-    data = np.random.randn(n_samples, n_vars)
-    cols = [f"Var{i + 1}" for i in range(n_vars)]
-    df = pd.DataFrame(data, columns=cols)
-    n = n_vars
-    corr = np.ones((n, n))
-    for i in range(n):
-        for j in range(i + 1, n):
-            r, _ = stats.spearmanr(df.iloc[:, i], df.iloc[:, j])
-            corr[i, j] = r
-            corr[j, i] = r
-    corr_df = pd.DataFrame(corr, index=cols, columns=cols)
-    ax = triangular_heatmap(
-        corr_df,
-        annot=True,
-        annot_kws={'size': 7.2},
-        linewidths=0.5,
-        linecolor='white',
-        ticks_size=8,
-        vmax=1,
-        vmin=-1,
-    )
+    from sklearn.model_selection import train_test_split
+    real = np.random.randn(100)
+    pred = np.random.randn(100)
+    correlation_graph_between_prediction_and_reality(real, pred)
     plt.show()
